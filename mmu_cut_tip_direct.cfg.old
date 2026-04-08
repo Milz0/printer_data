@@ -1,0 +1,66 @@
+[gcode_macro CUT_FILAMENT]
+description: Perform filament cut with toolhead-mounted servo cutter
+variable_servo_name: 'mmu_gantry_servo'
+variable_minimum_angle: 40
+variable_cut_angle: 80
+gcode:
+  SET_SERVO SERVO={servo_name} ANGLE={cut_angle}
+  G4 P750
+  SET_SERVO SERVO={servo_name} ANGLE={minimum_angle}
+  G4 P250
+
+[gcode_macro _MMU_CUT_TIP_DIRECT]
+description: Happy Hare direct toolhead servo tip cut macro
+variable_output_park_pos: 0
+gcode:
+  {% set final_eject = params.FINAL_EJECT|default(0)|int %}
+  {% set vars = printer['gcode_macro _MMU_CUT_TIP_VARS'] %}
+  {% set park_vars = printer['gcode_macro _MMU_PARK'] %}
+
+  {% set retract_length = vars['retract_length']|float %}
+  {% set simple_tip_forming = vars['simple_tip_forming']|default(true)|lower == 'true' %}
+  {% set blade_pos = vars['blade_pos']|float %}
+  {% set rip_length = vars['rip_length']|float %}
+  {% set pushback_length = vars['pushback_length']|float %}
+  {% set pushback_dwell_time = vars['pushback_dwell_time']|int %}
+  {% set extruder_move_speed = vars['extruder_move_speed']|float %}
+  {% set restore_position = vars['restore_position']|default(true)|lower == 'true' %}
+  {% set travel_speed = vars['travel_speed']|float %}
+  {% set extruder_park_pos = blade_pos + rip_length %}
+
+  SAVE_GCODE_STATE NAME=_MMU_CUT_TIP_DIRECT_state
+
+  G90
+  M83
+  G92 E0
+
+  {% set effective_retract_length = retract_length - printer.mmu.extruder_filament_remaining - park_vars.retracted_length %}
+  {% if effective_retract_length > 0 %}
+    MMU_LOG MSG="Retracting filament {effective_retract_length|round(1)}mm prior to direct servo cut"
+    G1 E-{effective_retract_length} F{extruder_move_speed * 60}
+    {% if simple_tip_forming %}
+      G1 E{effective_retract_length / 2} F{extruder_move_speed * 60}
+      G1 E-{effective_retract_length / 2} F{extruder_move_speed * 60}
+    {% endif %}
+  {% endif %}
+
+  MMU_LOG MSG="Performing direct toolhead servo cut"
+  CUT_FILAMENT
+  _MMU_EVENT EVENT="filament_cut"
+
+  {% set effective_pushback_length = [pushback_length, retract_length - printer.mmu.extruder_filament_remaining - park_vars.retracted_length]|min %}
+  {% if effective_pushback_length > 0 %}
+    MMU_LOG MSG="Pushing filament fragment back {effective_pushback_length|round(1)}mm after cut"
+    G1 E{effective_pushback_length} F{extruder_move_speed * 60}
+    G4 P{pushback_dwell_time}
+    G1 E-{effective_pushback_length} F{extruder_move_speed * 60}
+  {% endif %}
+
+  {% if final_eject %}
+    G92 E0
+    G1 E-80 F{extruder_move_speed * 60}
+  {% endif %}
+
+  SET_GCODE_VARIABLE MACRO=_MMU_CUT_TIP_DIRECT VARIABLE=output_park_pos VALUE={extruder_park_pos}
+
+  RESTORE_GCODE_STATE NAME=_MMU_CUT_TIP_DIRECT_state MOVE={1 if restore_position else 0} MOVE_SPEED={travel_speed}
